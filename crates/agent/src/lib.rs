@@ -31,19 +31,34 @@ impl AgentService {
         if let Some((x, y)) = parse_add(prompt) {
             debug!("tool router selected add tool");
             let out = AddTool.call(OperationArgs { x, y }).await?;
-            return Ok(Some(format!("Tool result: {out}")));
+            return Ok(Some(tool_response(
+                "add",
+                0.99,
+                None,
+                json!({ "value": out }),
+            )));
         }
 
         if let Some((x, y)) = parse_subtract(prompt) {
             debug!("tool router selected subtract tool");
             let out = SubtractTool.call(OperationArgs { x, y }).await?;
-            return Ok(Some(format!("Tool result: {out}")));
+            return Ok(Some(tool_response(
+                "subtract",
+                0.99,
+                None,
+                json!({ "value": out }),
+            )));
         }
 
         if let Some(expression) = parse_expression(prompt) {
             debug!("tool router selected calculator tool");
             let out = evaluate_expression(&expression)?;
-            return Ok(Some(format!("Tool result: {out}")));
+            return Ok(Some(tool_response(
+                "calculator",
+                0.98,
+                None,
+                json!({ "expression": expression, "value": out }),
+            )));
         }
 
         if should_use_memory_tool(prompt) {
@@ -118,27 +133,23 @@ fn should_use_memory_tool(prompt: &str) -> bool {
 
 fn memory_summary(context: &ToolContext) -> String {
     if context.memory.is_empty() {
-        return "Memory tool: no stored runs yet.".to_string();
+        return tool_response("memory_retrieval", 0.95, None, json!({ "runs": [] }));
     }
 
-    let lines = context
+    let runs = context
         .memory
         .iter()
         .take(5)
-        .enumerate()
-        .map(|(idx, run)| {
-            format!(
-                "{}. [{}] prompt='{}' response='{}'",
-                idx + 1,
-                run.created_at,
-                truncate(&run.user_prompt, 80),
-                truncate(&run.response, 80)
-            )
+        .map(|run| {
+            json!({
+                "created_at": run.created_at,
+                "prompt": truncate(&run.user_prompt, 80),
+                "response": truncate(&run.response, 80),
+            })
         })
-        .collect::<Vec<_>>()
-        .join("\n");
+        .collect::<Vec<_>>();
 
-    format!("Memory tool (latest runs):\n{lines}")
+    tool_response("memory_retrieval", 0.95, None, json!({ "runs": runs }))
 }
 
 fn parse_fetch_url(prompt: &str) -> Option<String> {
@@ -155,17 +166,42 @@ fn parse_fetch_url(prompt: &str) -> Option<String> {
 
 async fn fetch_url_excerpt(url: &str) -> String {
     if !(url.starts_with("http://") || url.starts_with("https://")) {
-        return "Web fetch tool error: URL must start with http:// or https://".to_string();
+        return tool_response(
+            "web_fetch",
+            0.1,
+            Some(url),
+            json!({ "error": "URL must start with http:// or https://" }),
+        );
     }
 
     let client = Client::new();
     match client.get(url).send().await {
         Ok(resp) if resp.status().is_success() => match resp.text().await {
-            Ok(text) => format!("Web fetch tool result:\n{}", truncate(&text, 600)),
-            Err(err) => format!("Web fetch tool error: failed reading body: {err}"),
+            Ok(text) => tool_response(
+                "web_fetch",
+                0.9,
+                Some(url),
+                json!({ "excerpt": truncate(&text, 600) }),
+            ),
+            Err(err) => tool_response(
+                "web_fetch",
+                0.2,
+                Some(url),
+                json!({ "error": format!("failed reading body: {err}") }),
+            ),
         },
-        Ok(resp) => format!("Web fetch tool error: non-success status {}", resp.status()),
-        Err(err) => format!("Web fetch tool error: {err}"),
+        Ok(resp) => tool_response(
+            "web_fetch",
+            0.2,
+            Some(url),
+            json!({ "error": format!("non-success status {}", resp.status()) }),
+        ),
+        Err(err) => tool_response(
+            "web_fetch",
+            0.1,
+            Some(url),
+            json!({ "error": err.to_string() }),
+        ),
     }
 }
 
@@ -180,20 +216,66 @@ async fn fetch_latest_node_version() -> String {
     match req.send().await {
         Ok(resp) if resp.status().is_success() => match resp.json::<Vec<NodeRelease>>().await {
             Ok(releases) => match releases.first() {
-                Some(latest) => format!(
-                    "Web fetch tool result: latest Node.js version is {} (source: https://nodejs.org/dist/index.json)",
-                    latest.version
+                Some(latest) => tool_response(
+                    "latest_node_version",
+                    0.99,
+                    Some("https://nodejs.org/dist/index.json"),
+                    json!({ "version": latest.version }),
                 ),
-                None => "Web fetch tool error: no releases found in Node.js index.".to_string(),
+                None => tool_response(
+                    "latest_node_version",
+                    0.2,
+                    Some("https://nodejs.org/dist/index.json"),
+                    json!({ "error": "no releases found in Node.js index" }),
+                ),
             },
-            Err(err) => format!("Web fetch tool error: invalid Node.js index payload: {err}"),
+            Err(err) => tool_response(
+                "latest_node_version",
+                0.2,
+                Some("https://nodejs.org/dist/index.json"),
+                json!({ "error": format!("invalid Node.js index payload: {err}") }),
+            ),
         },
-        Ok(resp) => format!(
-            "Web fetch tool error: Node.js index status {}",
-            resp.status()
+        Ok(resp) => tool_response(
+            "latest_node_version",
+            0.2,
+            Some("https://nodejs.org/dist/index.json"),
+            json!({ "error": format!("Node.js index status {}", resp.status()) }),
         ),
-        Err(err) => format!("Web fetch tool error: {err}"),
+        Err(err) => tool_response(
+            "latest_node_version",
+            0.1,
+            Some("https://nodejs.org/dist/index.json"),
+            json!({ "error": err.to_string() }),
+        ),
     }
+}
+
+#[derive(Debug, Serialize)]
+struct ToolOutput {
+    tool_name: String,
+    source_url: Option<String>,
+    confidence: f32,
+    result: serde_json::Value,
+}
+
+fn tool_response(
+    tool_name: &str,
+    confidence: f32,
+    source_url: Option<&str>,
+    result: serde_json::Value,
+) -> String {
+    serde_json::to_string(&ToolOutput {
+        tool_name: tool_name.to_string(),
+        source_url: source_url.map(std::string::ToString::to_string),
+        confidence,
+        result,
+    })
+    .unwrap_or_else(|err| {
+        format!(
+            "{{\"tool_name\":\"{tool_name}\",\"confidence\":0.0,\"result\":{{\"error\":\"serialization failed: {err}\"}}}}"
+        )
+    })
 }
 
 fn truncate(value: &str, max_chars: usize) -> String {
@@ -416,3 +498,31 @@ impl Tool for SubtractTool {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::{AgentService, ToolContext};
+
+    #[tokio::test]
+    async fn routes_add_tool() {
+        let service = AgentService::new();
+        let out = service
+            .run_tools_if_needed("please add 2 and 5", &ToolContext::default())
+            .await
+            .expect("tool execution should succeed")
+            .expect("tool response expected");
+        assert!(out.contains("\"tool_name\":\"add\""));
+        assert!(out.contains("\"value\":7"));
+    }
+
+    #[tokio::test]
+    async fn routes_calculator_tool() {
+        let service = AgentService::new();
+        let out = service
+            .run_tools_if_needed("calc 2 + 3 * 4", &ToolContext::default())
+            .await
+            .expect("calculator should succeed")
+            .expect("tool response expected");
+        assert!(out.contains("\"tool_name\":\"calculator\""));
+        assert!(out.contains("\"value\":14"));
+    }
+}

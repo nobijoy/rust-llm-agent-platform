@@ -26,6 +26,7 @@ Rust LLM agent backend with local OSS model support, typed tool orchestration, p
 - `GET /health`
 - `POST /api/v1/chat`
   - Body: `{ "prompt": "add 2 3" }`
+  - Tool-driven responses are JSON strings with `tool_name`, `source_url`, `confidence`, and `result`.
 - `GET /api/v1/runs/{limit}`
 
 ## Notes
