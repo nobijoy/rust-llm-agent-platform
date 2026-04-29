@@ -1,0 +1,29 @@
+services:
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-data:/root/.ollama
+
+  api:
+    build:
+      context: ../..
+      dockerfile: ops/docker/Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      APP_HOST: 0.0.0.0
+      APP_PORT: 8080
+      OLLAMA_BASE_URL: http://ollama:11434
+      OLLAMA_MODEL: llama3.1:8b-instruct-q4_K_M
+      DATABASE_URL: sqlite://./data/agent.db
+      RUST_LOG: info,tower_http=info,api=debug,agent=debug
+    volumes:
+      - app-data:/app/data
+    depends_on:
+      - ollama
+
+volumes:
+  ollama-data:
+  app-data:
