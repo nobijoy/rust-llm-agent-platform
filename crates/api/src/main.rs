@@ -1,7 +1,7 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use agent::AgentService;
+use agent::{AgentService, MemoryRecord, ToolContext};
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
@@ -63,7 +63,7 @@ async fn main() -> anyhow::Result<()> {
         .layer(TraceLayer::new_for_http())
         .layer(TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,
-            std::time::Duration::from_secs(30),
+            std::time::Duration::from_secs(120),
         ))
         .layer(CorsLayer::permissive())
         .with_state(state);
@@ -103,7 +103,23 @@ async fn chat(
 
     let response = if let Some(tool_response) = state
         .agent
-        .run_tools_if_needed(&payload.prompt)
+        .run_tools_if_needed(
+            &payload.prompt,
+            &ToolContext {
+                memory: state
+                    .storage
+                    .recent_runs(5)
+                    .await
+                    .map_err(|e| ApiError::Internal(e.to_string()))?
+                    .into_iter()
+                    .map(|run| MemoryRecord {
+                        created_at: run.created_at.to_rfc3339(),
+                        user_prompt: run.user_prompt,
+                        response: run.response,
+                    })
+                    .collect(),
+            },
+        )
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?
     {

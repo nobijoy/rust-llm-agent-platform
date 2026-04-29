@@ -14,7 +14,7 @@ Rust LLM agent backend with local OSS model support, typed tool orchestration, p
 2. Start with Docker Compose:
    - `docker compose -f ops/docker/docker-compose.yml up --build`
 3. Pull a model in Ollama container if needed:
-   - `docker exec -it <ollama-container> ollama pull llama3.1:8b-instruct-q4_K_M`
+   - `docker exec -it <ollama-container> ollama pull qwen2.5:3b`
 
 ## Local Dev
 - `cargo check`
